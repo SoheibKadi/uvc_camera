@@ -17,7 +17,7 @@ This branch is intended for reproducibility testing and community feedback. It p
 - Runtime task scenes:
   - `tabletop`
   - `shelf_reach`
-- OpenArm USD assets tracked with Git LFS
+- Detailed OpenArm v2 visual meshes with their embedded materials
 
 ## Requirements
 
@@ -26,7 +26,6 @@ Recommended host setup:
 - Ubuntu 24.04 LTS
 - NVIDIA GPU with the proprietary driver, 595.58.03 or newer
 - Peppy
-- Git LFS
 - 32 GB RAM recommended
 
 Isaac Sim base image:
@@ -243,25 +242,38 @@ openarm_sim_isaac/robots/openarm/_launcher.py
 
 Runtime task scenes are loaded on top of the base environment.
 
-## Git LFS
+## Robot visual assets
 
-The OpenArm USD assets are tracked with Git LFS:
+The base image carries the robot USD stages from the asset store. During the node
+image build, `scripts/build_visuals.py` composes the v2 stage's render geometry
+from the official `enactic/openarm_description` COLLADA visuals. The upstream
+revision and each file's SHA-256 are pinned in `scripts/visual_sources.json`.
+Source downloads and conversion happen at build time, without a GPU; loading the
+robot at startup needs neither network access nor conversion dependencies.
+
+Each material-bearing mesh region keeps its source color, triangle topology,
+normals and scene transform. The generated `openarm_v2_visuals.usdc` library is
+instanced by all 21 v2 visual links. The existing body scale, mirrored left-arm
+frames and gripper offsets are retained. Link poses, joints, drives, masses and
+collision geometry come from the base stage and are not changed by conversion.
+The generated library, source manifest and Apache-2.0 license are packaged beside
+`openarm_bimanual_v2.usd`.
+
+The converter accepts the pinned sources' opaque Lambert triangle meshes and
+fails the build for missing attachments, checksum mismatches or unsupported
+materials. It uses Isaac Sim's own USD libraries. COLLADA parsing dependencies
+live in a disposable build virtual environment and do not affect the runtime.
+
+Run the GPU-free regression suites from the repository root:
 
 ```bash
-git lfs install
-git lfs track 'openarm_sim_isaac/robot_assets/**/*.usd'
-git add .gitattributes
-git add openarm_sim_isaac/robot_assets
-git lfs ls-files
+uv run --project openarm/sim_isaac/tests --locked --group dev \
+  pytest openarm/sim_isaac/tests
 ```
 
-Expected `.gitattributes` rule:
-
-```text
-openarm_sim_isaac/robot_assets/**/*.usd filter=lfs diff=lfs merge=lfs -text
-```
-
-`git lfs ls-files` may be empty until the matching USD files are staged or committed.
+On Linux ARM64, PyPI has no `usd-core` distribution. The USD-specific test module
+is skipped there; the camera, startup and timing suites still run. Image builds
+use the USD libraries bundled with Isaac Sim rather than the PyPI package.
 
 ## Troubleshooting
 

@@ -17,6 +17,7 @@ From: peppybot/openarm-isaac-sim:6.1.0-1
 %files
     peppy.json5 /opt/openarm_sim_isaac/peppy.json5
     robots /opt/openarm_sim_isaac/robots
+    scripts /opt/openarm_sim_isaac/scripts
     .peppy/libs/peppygen /opt/openarm_sim_isaac/.peppy/libs/peppygen
     .peppy/libs/peppylib /opt/openarm_sim_isaac/.peppy/libs/peppylib
 
@@ -24,6 +25,17 @@ From: peppybot/openarm-isaac-sim:6.1.0-1
     /isaac-sim/python.sh -m pip install --no-cache-dir \
         pycapnp \
         pyjson5
+
+    # Convert on the CPU with Isaac's own USD libraries on either architecture.
+    # Only COLLADA parsing dependencies go into the disposable build environment.
+    /isaac-sim/kit/python/bin/python3 -m venv /opt/openarm_visuals_build
+    /opt/openarm_visuals_build/bin/pip install --no-cache-dir \
+        -r /opt/openarm_sim_isaac/scripts/requirements-visuals.txt
+    usd_libs=$(find /isaac-sim/extscache -maxdepth 1 -type d -name 'omni.usd.libs-*')
+    PYTHONPATH="$usd_libs" LD_LIBRARY_PATH="$usd_libs/bin:${LD_LIBRARY_PATH:-}" \
+        /opt/openarm_visuals_build/bin/python /opt/openarm_sim_isaac/scripts/build_visuals.py \
+        /opt/robot_assets/openarm/isaac/openarm_bimanual_v2.usd
+    rm -rf /opt/openarm_visuals_build
 
 %runscript
     cd /opt/openarm_sim_isaac
