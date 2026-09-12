@@ -1,12 +1,12 @@
-# OpenArm Isaac Sim 6.0 Integration
+# OpenArm Isaac Sim 6.1 Integration
 
-Experimental Isaac Sim 6.0.1 integration for OpenArm bimanual robot using Peppy.
+Experimental Isaac Sim 6.1.0 integration for OpenArm bimanual robot using Peppy.
 
 This branch is intended for reproducibility testing and community feedback. It provides headless Isaac Sim startup, WebRTC streaming, OpenArm runtime control, custom USD loading and reusable manipulation scenarios.
 
 ## Features
 
-- Isaac Sim 6.0.1
+- Isaac Sim 6.1.0
 - OpenArm v2 bimanual robot
 - Peppy runtime integration
 - Headless WebRTC streaming
@@ -32,7 +32,7 @@ Recommended host setup:
 Isaac Sim base image:
 
 ```text
-nvcr.io/nvidia/isaac-sim:6.0.1
+nvcr.io/nvidia/isaac-sim:6.1.0
 ```
 
 The node builds on `peppybot/openarm-isaac-sim`, which
@@ -93,7 +93,7 @@ Both headless and windowed launches use the packaged
 and viewport controls. Headless mode enables WebRTC; `cameras_enabled=true`
 enables Replicator for robot camera capture. Extensions resolve from the Isaac Sim
 installation, with settings persistence and extension-registry lookup disabled.
-Runtime scenes and props use `isaacsim.storage.native`'s default Isaac 6.0 asset
+Runtime scenes and props use `isaacsim.storage.native`'s default Isaac 6.1 asset
 root; `PEPPY_ROBOT_ASSETS_DIR` selects the robot USD directory.
 
 The node targets 60 Hz using wall-monotonic absolute deadlines. Each due iteration
@@ -114,7 +114,7 @@ renderer denoises only through DLSS Ray Reconstruction, which runs on the NGX
 core library shipped with the NVIDIA driver, and Peppy's `--nv` GPU binding does
 not carry the host's copy into the container. The base image therefore carries
 the core itself: `robot_initializer/scripts/Dockerfile.isaac` takes
-`libnvidia-ngx.so.1` from the driver Isaac Sim 6.0 was tested with, 595.58.03,
+`libnvidia-ngx.so.1` from the driver Isaac Sim 6.1 was tested with, 595.58.03,
 pinned by version and checksum. The core reads the running driver through NVML
 and the DLSS snippets check that version against their own minimum, so the host
 needs a driver at least that new, not that exact version. Kit falls back to TAA
