@@ -1,10 +1,12 @@
 """Exercise material-bearing COLLADA conversion and instanced USD composition."""
 
 import hashlib
-import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
+import sys
+import tarfile
 
 import collada
 import numpy as np
@@ -15,11 +17,9 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
 
 
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-_spec = importlib.util.spec_from_file_location(
-    "build_visuals", _SCRIPTS / "build_visuals.py"
-)
-build = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(build)
+sys.path.insert(0, str(_SCRIPTS))
+import build_visuals as build  # noqa: E402
+import prepare_assets as prepare  # noqa: E402
 
 
 @pytest.fixture
@@ -140,15 +140,6 @@ def robot(tmp_path):
     return stage
 
 
-def _nonvisual_specs(stage):
-    layer = Sdf.Layer.CreateAnonymous()
-    Sdf.CopySpec(stage.GetRootLayer(), "/openarm", layer, "/openarm")
-    for link in build.LINK_MESHES:
-        body = layer.GetPrimAtPath(f"/openarm/{link}")
-        del body.nameChildren["visuals"]
-    return layer.ExportToString()
-
-
 def test_converter_preserves_geometry_materials_split_normals_and_scene_transforms(dae):
     stage = Usd.Stage.CreateInMemory()
     build.convert_dae(stage, dae, Sdf.Path("/Visuals/part"))
@@ -177,15 +168,21 @@ def test_converter_preserves_geometry_materials_split_normals_and_scene_transfor
         np.testing.assert_allclose(points, triangles.vertex, atol=1e-6)
 
 
+@pytest.mark.parametrize("parent_transform", [False, True])
 def test_replacement_preserves_physics_frames_and_composes_materials_on_instances(
-    robot, dae, tmp_path
+    robot, dae, tmp_path, parent_transform
 ):
+    if parent_transform:
+        parent = UsdGeom.Xformable(robot.GetPrimAtPath("/prototypes/openarm_body_link0"))
+        parent.AddTranslateOp().Set((5, 2, 3))
+        parent.AddRotateXOp().Set(45)
+        parent.AddScaleOp().Set((2, 3, 4))
     library_path = tmp_path / "visuals.usdc"
     library = Usd.Stage.CreateNew(str(library_path))
     for name in set(build.LINK_MESHES.values()):
         build.convert_dae(library, dae, Sdf.Path(f"/Visuals/{name}"))
     library.GetRootLayer().Save()
-    physics = _nonvisual_specs(robot)
+    physics = prepare.nonvisual_specs(robot)
     attachments = build.visual_attachments(robot)
     cache = UsdGeom.XformCache()
     world_frames = {
@@ -196,7 +193,7 @@ def test_replacement_preserves_physics_frames_and_composes_materials_on_instance
     }
     build.replace_visuals(robot, library_path, attachments)
     robot.GetRootLayer().Save()
-    assert _nonvisual_specs(robot) == physics
+    assert prepare.nonvisual_specs(robot) == physics
     assert len(attachments) == 21
     assert build.visual_attachments(robot) == attachments
     for link in build.LINK_MESHES:
@@ -219,8 +216,9 @@ def test_replacement_preserves_physics_frames_and_composes_materials_on_instance
 
 def test_build_packages_render_library_provenance_and_license(robot, dae, tmp_path):
     attachments = build.visual_attachments(robot)
-    physics = _nonvisual_specs(robot)
+    physics = prepare.nonvisual_specs(robot)
     manifest = json.loads((_SCRIPTS / "visual_sources.json").read_text())
+    manifest["revision"] = "a" * 40
     sources = {name: dae for name in set(build.LINK_MESHES.values())}
     build.build_visuals(Path(robot.GetRootLayer().realPath), sources, manifest)
     library = Usd.Stage.Open(str(tmp_path / build.VISUALS_FILENAME))
@@ -232,7 +230,7 @@ def test_build_packages_render_library_provenance_and_license(robot, dae, tmp_pa
         json.loads((tmp_path / "openarm_visual_sources.json").read_text()) == manifest
     )
     assert build.visual_attachments(robot) == attachments
-    assert _nonvisual_specs(robot) == physics
+    assert prepare.nonvisual_specs(robot) == physics
     assert len(_meshes(robot.GetPrimAtPath("/openarm"))) == 42
 
 
@@ -316,7 +314,7 @@ def test_unsupported_visual_source_fails_instead_of_rendering_white(dae, kind, m
         build.convert_dae(Usd.Stage.CreateInMemory(), dae, Sdf.Path("/Visuals/part"))
 
 
-def test_build_recipe_pins_sources_and_uses_isaacs_usd_without_gpu():
+def test_maintenance_sources_pin_meshes_robot_stages_and_license():
     manifest = json.loads((_SCRIPTS / "visual_sources.json").read_text())
     assert len(manifest["revision"]) == 40
     assert set(manifest["meshes"]) == set(build.LINK_MESHES.values())
@@ -324,11 +322,205 @@ def test_build_recipe_pins_sources_and_uses_isaacs_usd_without_gpu():
         len(source["sha256"]) == 64 and "/visual/" in source["path"]
         for source in manifest["meshes"].values()
     )
-    definition = (_SCRIPTS.parent / "apptainer.def").read_text()
-    assert "scripts /opt/openarm_sim_isaac/scripts" in definition
-    assert "omni.usd.libs-*" in definition
-    assert "/opt/openarm_sim_isaac/scripts/build_visuals.py" in definition
-    assert "/opt/robot_assets/openarm/isaac/openarm_bimanual_v2.usd" in definition
+    assert "@sha256:" in manifest["robot"]["image"]
+    assert len(manifest["robot"]["layer_sha256"]) == 64
+    assert len(manifest["robot"]["files"]) == 5
+    assert all(len(checksum) == 64 for checksum in manifest["robot"]["files"].values())
+    assert prepare.sha256(_SCRIPTS / "openarm_description.LICENSE.txt") == manifest["license"]["sha256"]
     requirements = (_SCRIPTS / "requirements-visuals.txt").read_text()
-    assert "usd-core" not in requirements
     assert "pycollada==0.9.3" in requirements
+
+
+@pytest.fixture
+def bundle_sources(robot, dae, tmp_path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for filename in (
+        "openarm_description.LICENSE.txt", "build_visuals.py", "prepare_assets.py"
+    ):
+        shutil.copyfile(_SCRIPTS / filename, scripts / filename)
+    manifest = json.loads((_SCRIPTS / "visual_sources.json").read_text())
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    robot.GetRootLayer().Export(str(source_dir / prepare.STAGE_FILENAME))
+    v1 = Usd.Stage.CreateNew(str(source_dir / "openarm_bimanual.usd"))
+    UsdGeom.Xform.Define(v1, "/openarm")
+    for filename in manifest["robot"]["files"]:
+        if not filename.startswith("configuration/"):
+            continue
+        path = source_dir / filename
+        path.parent.mkdir(exist_ok=True)
+        layer = Sdf.Layer.CreateNew(str(path))
+        layer.Save()
+        v1.GetRootLayer().subLayerPaths.append(filename)
+    v1.GetRootLayer().Save()
+    manifest["robot"]["files"] = {
+        name: prepare.sha256(source_dir / name) for name in manifest["robot"]["files"]
+    }
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    for name, source in manifest["meshes"].items():
+        shutil.copyfile(dae, meshes / f"{name}.dae")
+        source["sha256"] = prepare.sha256(dae)
+    (scripts / "visual_sources.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(prepare, "SCRIPTS_DIR", scripts)
+    monkeypatch.setattr(build, "SCRIPTS_DIR", scripts)
+    return source_dir, meshes, manifest
+
+
+def test_preparation_archives_complete_offline_bundle_with_verifiable_provenance(
+    bundle_sources, tmp_path
+):
+    source_dir, meshes, sources = bundle_sources
+    output = tmp_path / "bundle.tar.gz"
+    provenance = prepare.prepare_assets(source_dir, output, meshes)
+    assert provenance["validation"] == {
+        "visual_attachments": 21,
+        "render_meshes": 42,
+        "source_colors": 2,
+        "nonvisual_specs_unchanged": True,
+        "attachment_frames_unchanged": True,
+        "runtime_assets": ["OmniPBR.mdl"],
+    }
+    with tarfile.open(output) as archive:
+        names = archive.getnames()
+        assert names == sorted(names)
+        assert set(names) == set(sources["robot"]["files"]) | {
+            build.VISUALS_FILENAME, "openarm_visual_sources.json",
+            "openarm_description.LICENSE.txt", "bundle_manifest.json",
+        }
+        for name, info in provenance["files"].items():
+            payload = archive.extractfile(name).read()
+            assert hashlib.sha256(payload).hexdigest() == info["sha256"]
+            assert len(payload) == info["size"]
+            member = archive.getmember(name)
+            assert member.mtime == member.uid == member.gid == 0
+            assert member.mode == 0o644
+        assert json.load(archive.extractfile("bundle_manifest.json")) == provenance
+        extracted = tmp_path / "extracted"
+        archive.extractall(extracted, filter="data")
+    original = Usd.Stage.Open(str(source_dir / prepare.STAGE_FILENAME))
+    assert prepare.validate_assets(extracted, original) == provenance["validation"]
+    # Source stages remain untouched; only the copied v2 stage is repaired.
+    for name, checksum in sources["robot"]["files"].items():
+        assert prepare.sha256(source_dir / name) == checksum
+        if name != prepare.STAGE_FILENAME:
+            assert prepare.sha256(extracted / name) == checksum
+    second = tmp_path / "second.tar.gz"
+    prepare.prepare_assets(source_dir, second, meshes)
+    assert prepare.sha256(second) == prepare.sha256(output)
+
+
+@pytest.mark.parametrize("kind", ["stage", "license", "mesh"])
+def test_preparation_refuses_corrupt_sources_without_producing_a_bundle(
+    bundle_sources, tmp_path, kind
+):
+    source_dir, meshes, _ = bundle_sources
+    if kind == "stage":
+        path = source_dir / prepare.STAGE_FILENAME
+    elif kind == "license":
+        path = prepare.SCRIPTS_DIR / "openarm_description.LICENSE.txt"
+    else:
+        path = meshes / "base_link.dae"
+    path.write_bytes(b"incorrect source")
+    output = tmp_path / "bundle.tar.gz"
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        prepare.prepare_assets(source_dir, output, meshes)
+    assert not output.exists()
+
+
+def test_preparation_never_overwrites_an_archive(bundle_sources, tmp_path):
+    source_dir, meshes, _ = bundle_sources
+    output = tmp_path / "bundle.tar.gz"
+    output.write_bytes(b"published artifact")
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        prepare.prepare_assets(source_dir, output, meshes)
+    assert output.read_bytes() == b"published artifact"
+
+
+@pytest.mark.parametrize("kind", ["physics", "frame", "parent_frame", "metadata", "missing", "external"])
+def test_validation_rejects_changed_physics_frames_or_incomplete_bundle(
+    bundle_sources, tmp_path, kind
+):
+    source_dir, meshes, _ = bundle_sources
+    output = tmp_path / "bundle.tar.gz"
+    prepare.prepare_assets(source_dir, output, meshes)
+    extracted = tmp_path / "extracted"
+    with tarfile.open(output) as archive:
+        archive.extractall(extracted, filter="data")
+    stage = Usd.Stage.Open(str(extracted / prepare.STAGE_FILENAME))
+    if kind == "physics":
+        body = stage.GetPrimAtPath("/openarm/openarm_body_link0")
+        UsdPhysics.MassAPI(body).GetMassAttr().Set(999)
+        stage.GetRootLayer().Save()
+        message = "nonvisual robot data"
+    elif kind == "frame":
+        visual = stage.GetPrimAtPath("/openarm/openarm_body_link0/visuals/openarm_body_link0_visual")
+        UsdGeom.Xformable(visual).GetOrderedXformOps()[0].Set(Gf.Matrix4d(1))
+        stage.GetRootLayer().Save()
+        message = "attachment frames"
+    elif kind == "parent_frame":
+        parent = stage.GetPrimAtPath("/openarm/openarm_body_link0/visuals")
+        UsdGeom.Xformable(parent).AddTranslateOp().Set((5, 0, 0))
+        stage.GetRootLayer().Save()
+        message = "world attachment frames"
+    elif kind == "metadata":
+        stage.SetTimeCodesPerSecond(999)
+        stage.GetRootLayer().Save()
+        message = "nonvisual robot data"
+    else:
+        v1 = Sdf.Layer.FindOrOpen(str(extracted / "openarm_bimanual.usd"))
+        if kind == "external":
+            outside = Sdf.Layer.CreateNew(str(tmp_path / "outside.usda"))
+            outside.Save()
+            v1.subLayerPaths.append("../outside.usda")
+            message = "escapes the bundle"
+        else:
+            v1.subLayerPaths.append("missing.usda")
+            message = "composition errors"
+        v1.Save()
+    original = Usd.Stage.Open(str(source_dir / prepare.STAGE_FILENAME))
+    with pytest.raises(ValueError, match=message):
+        prepare.validate_assets(extracted, original)
+
+
+def test_failed_archive_write_cleans_up_and_can_be_retried(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    payload = source / "stage.usd"
+    payload.write_bytes(b"fixture")
+    output = tmp_path / "bundle.tar.gz"
+    original_open = Path.open
+
+    def fail_source_read(path, *args, **kwargs):
+        if path == payload:
+            raise OSError("injected source read failure")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", fail_source_read)
+        with pytest.raises(OSError, match="injected source read failure"):
+            prepare.write_archive(source, output)
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == [source]
+    prepare.write_archive(source, output)
+    with tarfile.open(output) as archive:
+        assert archive.extractfile("stage.usd").read() == b"fixture"
+
+
+def test_archive_publication_never_replaces_a_concurrent_output(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "stage.usd").write_bytes(b"fixture")
+    output = tmp_path / "bundle.tar.gz"
+    original_link = Path.hardlink_to
+
+    def concurrent_output(path, target):
+        path.write_bytes(b"another publisher")
+        return original_link(path, target)
+
+    monkeypatch.setattr(Path, "hardlink_to", concurrent_output)
+    with pytest.raises(FileExistsError):
+        prepare.write_archive(source, output)
+    assert output.read_bytes() == b"another publisher"
+    assert set(tmp_path.iterdir()) == {source, output}

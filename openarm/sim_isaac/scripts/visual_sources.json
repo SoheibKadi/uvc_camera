@@ -1,6 +1,22 @@
 {
   "repository": "enactic/openarm_description",
   "revision": "14ff67b638ff1c738a1b9a6be8aaa5ce5ed2c831",
+  "license": {
+    "path": "LICENSE.txt",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "robot": {
+    "image": "peppybot/openarm-isaac-sim@sha256:9f211611ca550299cd8ae2c755a3f2cedd654bb453e5ed328e23f15518ebe195",
+    "layer_sha256": "134b50f295e6987db05dc5a5e875d9891ef239b7e7ae88771ed82741c1758668",
+    "directory": "/opt/robot_assets/openarm/isaac",
+    "files": {
+      "openarm_bimanual.usd": "a5b18e8292d70b7d7767c49137c7f4bc9eea2d697466be7d34bbb335f2b3478e",
+      "openarm_bimanual_v2.usd": "ba8e346c99e89d53680292248c2f182a1cd65a4c4dd67b024ee7ed1642db0173",
+      "configuration/openarm_bimanual_base.usd": "55d129950a453f859f1e795ab06b2c2d810f71e66051ca6d4f57ef0f0e887532",
+      "configuration/openarm_bimanual_physics.usd": "33f73a2426e232a514aad09139da527a4c645822a4fd59c851725567377fad94",
+      "configuration/openarm_bimanual_sensor.usd": "be7bed93ad1d4950223434004ffba28637f3bafaa47a746cafd4fd71ab60a8f0"
+    }
+  },
   "meshes": {
     "body_link0": {
       "path": "assets/robot/openarm_v2.0/meshes/body/visual/body_link0.dae",

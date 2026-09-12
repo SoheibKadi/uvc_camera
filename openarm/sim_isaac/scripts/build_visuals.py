@@ -171,8 +171,15 @@ def replace_visuals(
     """Replace visual references only; retain links, colliders, joints and drives."""
     for link, matrix in attachments.items():
         root = stage.GetPrimAtPath(f"/openarm/{link}/visuals")
+        parent = UsdGeom.Xformable(root)
+        parent_matrix = parent.GetLocalTransformation()
+        reset_stack = parent.GetResetXformStack()
         root.SetInstanceable(False)
         root.GetReferences().SetReferences([])
+        # A referenced prototype can contribute the parent's transform too.
+        if parent.GetLocalTransformation() != parent_matrix:
+            parent.MakeMatrixXform().Set(parent_matrix)
+        parent.SetResetXformStack(reset_stack)
         for child in root.GetChildren():
             stage.RemovePrim(child.GetPath())
         visual = UsdGeom.Xform.Define(
@@ -208,9 +215,8 @@ def build_visuals(stage_path: Path, sources: dict[str, Path], manifest: dict) ->
         SCRIPTS_DIR / "openarm_description.LICENSE.txt",
         stage_path.parent / "openarm_description.LICENSE.txt",
     )
-    shutil.copyfile(
-        SCRIPTS_DIR / "visual_sources.json",
-        stage_path.parent / "openarm_visual_sources.json",
+    (stage_path.parent / "openarm_visual_sources.json").write_text(
+        json.dumps(manifest, indent=2) + "\n"
     )
     print(f"Built {len(sources)} visual meshes for {len(attachments)} OpenArm v2 links")
 
